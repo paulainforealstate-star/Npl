@@ -18,6 +18,14 @@ def _rows(pairs: list[tuple[str, str]]) -> str:
     return "".join(f"<tr><th>{html.escape(k)}</th><td>{html.escape(v)}</td></tr>" for k, v in pairs)
 
 
+def tir_text(offer: dict) -> str:
+    if not offer:
+        return "—"
+    if offer.get("planned_irr") is None:
+        return "no calculable (los flujos no cambian de signo)"
+    return f"{offer['planned_irr']:.2%}"
+
+
 def case_report(case: dict, anonymized: bool) -> str:
     st = case["state"]
     name = anonymized_id(case["name"]) if anonymized else case["name"]
@@ -83,7 +91,7 @@ def case_report(case: dict, anonymized: bool) -> str:
     ("Vía elegida", decision.get("chosen", "—")),
     ("Justificación", decision.get("justification") or "—"),
     ("Importe ofertado", f"{offer['amount']:,.0f} €" if offer else "—"),
-    ("TIR prevista", f"{offer['planned_irr']:.2%}" if offer and offer.get("planned_irr") is not None else "—"),
+    ("TIR prevista", tir_text(offer)),
 ])}</table>
 
 <p class="aviso">Informe generado a partir de datos registrados en NPLDesk. No constituye asesoramiento jurídico ni certificación registral.</p>

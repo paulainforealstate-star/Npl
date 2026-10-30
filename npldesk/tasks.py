@@ -1,22 +1,21 @@
 """Tareas con dependencias y calendario de plazos procesales.
 
-Los plazos de PLAZOS_EJEMPLO son EJEMPLOS para probar el calendario. No son
-plazos legales: deben sustituirse por los vigentes, validados por un abogado.
+Los plazos están en plazos.json, una tabla versionada: cada plazo lleva su norma,
+su fuente, la fecha de revisión y quién lo validó. Un plazo sin `validado_por`
+aparece marcado como "sin validar". Hoy todos son EJEMPLOS, no plazos legales.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
+from pathlib import Path
 
-PLAZOS_EJEMPLO: dict[str, list[tuple[str, int]]] = {
-    "judicial_sin_adjudicar": [
-        ("Revisar la nota simple (EJEMPLO)", 7),
-        ("Comunicación al deudor (EJEMPLO)", 30),
-    ],
-    "judicial_adjudicada": [
-        ("Revisar cargas posteriores (EJEMPLO)", 14),
-    ],
-}
+PLAZOS_PATH = Path(__file__).with_name("plazos.json")
+
+
+def load_plazos(path: Path = PLAZOS_PATH) -> dict[str, list[dict]]:
+    return json.loads(path.read_text(encoding="utf-8"))["plazos"]
 
 
 def ready_tasks(tasks: list[dict]) -> list[dict]:
@@ -35,8 +34,17 @@ def overdue_tasks(tasks: list[dict], today: date) -> list[dict]:
     return out
 
 
-def deadline_calendar(phase: str, start: date) -> list[dict]:
+def deadline_calendar(phase: str, start: date, plazos: dict | None = None) -> list[dict]:
+    table = plazos if plazos is not None else load_plazos()
     return [
-        {"title": title, "due_date": (start + timedelta(days=days)).isoformat()}
-        for title, days in PLAZOS_EJEMPLO.get(phase, [])
+        {
+            "title": p["titulo"],
+            "due_date": (start + timedelta(days=p["dias"])).isoformat(),
+            "norma": p.get("norma"),
+            "fuente": p.get("fuente"),
+            "revisado": p.get("revisado"),
+            "validado": bool(p.get("validado_por")),
+            "validado_por": p.get("validado_por"),
+        }
+        for p in table.get(phase, [])
     ]

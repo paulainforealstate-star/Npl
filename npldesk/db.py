@@ -1,14 +1,25 @@
 """Persistencia en SQLite (biblioteca estándar).
 
-El esquema es sencillo y portable para migrar a PostgreSQL más adelante.
+Novedades de la v0.5:
+- Usuarios con contraseña hasheada y sesiones guardadas solo como hash.
+- Control de versiones por expediente (`version`), para detectar ediciones concurrentes.
+- Auditoría encadenada por hash e inmutable (triggers que impiden UPDATE y DELETE).
+
+El esquema sigue siendo sencillo y portable para migrar a PostgreSQL más adelante.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+
+GENESIS = "0" * 64
+IMMUTABLE_MSG = "El registro de auditoría es inmutable"
+AUDIT_FIELDS = ("ts", "user", "user_id", "action", "entity", "entity_id",
+                "detail_json", "ip", "request_id")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS cases (
@@ -18,6 +29,7 @@ CREATE TABLE IF NOT EXISTS cases (
     input_json TEXT NOT NULL,
     result_json TEXT,
     state_json TEXT NOT NULL DEFAULT '{}',
+    version INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -43,16 +55,55 @@ CREATE TABLE IF NOT EXISTS audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts TEXT NOT NULL,
     user TEXT NOT NULL,
+    user_id INTEGER,
     action TEXT NOT NULL,
     entity TEXT NOT NULL,
     entity_id TEXT,
-    detail_json TEXT NOT NULL DEFAULT '{}'
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    ip TEXT,
+    request_id TEXT,
+    prev_hash TEXT,
+    hash TEXT
+);
+CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit
+BEGIN SELECT RAISE(ABORT, 'El registro de auditoría es inmutable'); END;
+CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit
+BEGIN SELECT RAISE(ABORT, 'El registro de auditoría es inmutable'); END;
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    full_name TEXT NOT NULL,
+    email TEXT,
+    role TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    failed_attempts INTEGER NOT NULL DEFAULT 0,
+    locked_until TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked INTEGER NOT NULL DEFAULT 0
 );
 """
+
+_USER_FIELDS = {"password_hash", "active", "failed_attempts", "locked_until"}
+
+
+class StaleVersion(RuntimeError):
+    """El expediente cambió desde que se leyó (control de versiones)."""
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _digest(prev_hash: str, row: dict) -> str:
+    payload = json.dumps({"prev": prev_hash, **row}, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 class Database:
@@ -64,10 +115,100 @@ class Database:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
+
+    def _migrate(self) -> None:
+        """Añade a bases de datos de la v0.4 las columnas nuevas."""
+        def columns(table: str) -> set[str]:
+            return {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+
+        if "version" not in columns("cases"):
+            self.conn.execute("ALTER TABLE cases ADD COLUMN version INTEGER NOT NULL DEFAULT 1")
+        for name, decl in [("user_id", "INTEGER"), ("ip", "TEXT"), ("request_id", "TEXT"),
+                           ("prev_hash", "TEXT"), ("hash", "TEXT")]:
+            if name not in columns("audit"):
+                self.conn.execute(f"ALTER TABLE audit ADD COLUMN {name} {decl}")
+
+    def ping(self) -> None:
+        self.conn.execute("SELECT 1").fetchone()
+
+    def backup_to(self, dest: str | Path) -> None:
+        if self.path == ":memory:":
+            raise ValueError("Una base de datos en memoria no se puede copiar a fichero")
+        if Path(dest).exists():
+            raise ValueError(f"El destino ya existe: {dest}")
+        target = sqlite3.connect(str(dest))
+        try:
+            self.conn.backup(target)
+        finally:
+            target.close()
+
+    # ---- usuarios y sesiones -----------------------------------------------
+
+    def create_user(self, username: str, full_name: str, email: str | None,
+                    role: str, password_hash: str) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO users (username, full_name, email, role, password_hash, active,"
+            " failed_attempts, locked_until, created_at) VALUES (?, ?, ?, ?, ?, 1, 0, NULL, ?)",
+            (username, full_name, email, role, password_hash, _now()),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def get_user(self, user_id: int) -> dict | None:
+        row = self.conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return dict(row) if row else None
+
+    def get_user_by_name(self, username: str) -> dict | None:
+        row = self.conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        return dict(row) if row else None
+
+    def list_users(self) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT id, username, full_name, email, role, active, created_at FROM users ORDER BY id"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_users(self) -> int:
+        return int(self.conn.execute("SELECT COUNT(*) FROM users").fetchone()[0])
+
+    def update_user(self, user_id: int, **fields) -> None:
+        unknown = set(fields) - _USER_FIELDS
+        if unknown:
+            raise ValueError(f"Campos de usuario no permitidos: {', '.join(sorted(unknown))}")
+        if not fields:
+            return
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        self.conn.execute(f"UPDATE users SET {sets} WHERE id = ?", (*fields.values(), user_id))
+        self.conn.commit()
+
+    def create_session(self, token_hash: str, user_id: int, created_at: str, expires_at: str) -> None:
+        self.conn.execute(
+            "INSERT INTO sessions (token_hash, user_id, created_at, expires_at, revoked)"
+            " VALUES (?, ?, ?, ?, 0)",
+            (token_hash, user_id, created_at, expires_at),
+        )
+        self.conn.commit()
+
+    def get_session(self, token_hash: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT s.user_id, s.expires_at, s.revoked, u.username, u.full_name, u.role, u.active"
+            " FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?",
+            (token_hash,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def revoke_session(self, token_hash: str) -> None:
+        self.conn.execute("UPDATE sessions SET revoked = 1 WHERE token_hash = ?", (token_hash,))
+        self.conn.commit()
+
+    def revoke_user_sessions(self, user_id: int) -> None:
+        self.conn.execute("UPDATE sessions SET revoked = 1 WHERE user_id = ?", (user_id,))
+        self.conn.commit()
 
     # ---- expedientes -------------------------------------------------------
 
@@ -75,8 +216,8 @@ class Database:
                     result: dict | None, state: dict) -> int:
         now = _now()
         cur = self.conn.execute(
-            "INSERT INTO cases (name, phase, input_json, result_json, state_json, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO cases (name, phase, input_json, result_json, state_json, version, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
             (name, phase, json.dumps(input_data), json.dumps(result), json.dumps(state), now, now),
         )
         self.conn.commit()
@@ -99,6 +240,7 @@ class Database:
             "input": json.loads(row["input_json"]),
             "result": json.loads(row["result_json"]) if row["result_json"] else None,
             "state": json.loads(row["state_json"]),
+            "version": row["version"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
@@ -107,18 +249,23 @@ class Database:
         ids = [r["id"] for r in self.conn.execute("SELECT id FROM cases").fetchall()]
         return [self.get_case(i) for i in ids]
 
-    def save_case(self, case_id: int, *, phase: str | None = None,
+    def save_case(self, case_id: int, *, expected_version: int, phase: str | None = None,
                   result: dict | None = None, state: dict | None = None) -> None:
+        """Guarda solo si la versión en base de datos sigue siendo la que se leyó."""
         current = self.get_case(case_id)
         if current is None:
             raise LookupError("expediente no encontrado")
         new_phase = phase or current["phase"]
         new_result = result if result is not None else current["result"]
         new_state = state if state is not None else current["state"]
-        self.conn.execute(
-            "UPDATE cases SET phase = ?, result_json = ?, state_json = ?, updated_at = ? WHERE id = ?",
-            (new_phase, json.dumps(new_result), json.dumps(new_state), _now(), case_id),
+        cur = self.conn.execute(
+            "UPDATE cases SET phase = ?, result_json = ?, state_json = ?, updated_at = ?, version = version + 1"
+            " WHERE id = ? AND version = ?",
+            (new_phase, json.dumps(new_result), json.dumps(new_state), _now(), case_id, expected_version),
         )
+        if cur.rowcount == 0:
+            self.conn.rollback()
+            raise StaleVersion("El expediente se modificó en otra sesión")
         self.conn.commit()
 
     def delete_case(self, case_id: int) -> bool:
@@ -172,11 +319,24 @@ class Database:
 
     # ---- auditoría ---------------------------------------------------------
 
-    def add_audit(self, user: str, action: str, entity: str,
-                  entity_id: str | None, detail: dict | None = None) -> None:
+    def add_audit(self, user: str, action: str, entity: str, entity_id: str | None,
+                  detail: dict | None = None, *, user_id: int | None = None,
+                  ip: str | None = None, request_id: str | None = None) -> None:
+        last = self.conn.execute(
+            "SELECT hash FROM audit WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        prev = last["hash"] if last else GENESIS
+        row = {
+            "ts": _now(), "user": user, "user_id": user_id, "action": action,
+            "entity": entity, "entity_id": entity_id,
+            "detail_json": json.dumps(detail or {}, ensure_ascii=False, sort_keys=True),
+            "ip": ip, "request_id": request_id,
+        }
         self.conn.execute(
-            "INSERT INTO audit (ts, user, action, entity, entity_id, detail_json) VALUES (?, ?, ?, ?, ?, ?)",
-            (_now(), user, action, entity, entity_id, json.dumps(detail or {}, ensure_ascii=False)),
+            "INSERT INTO audit (ts, user, user_id, action, entity, entity_id, detail_json, ip,"
+            " request_id, prev_hash, hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (row["ts"], row["user"], row["user_id"], row["action"], row["entity"], row["entity_id"],
+             row["detail_json"], row["ip"], row["request_id"], prev, _digest(prev, row)),
         )
         self.conn.commit()
 
@@ -185,3 +345,16 @@ class Database:
             "SELECT * FROM audit ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
         return [{**dict(r), "detail": json.loads(r["detail_json"])} for r in rows]
+
+    def verify_audit(self) -> dict:
+        """Recalcula la cadena. Las filas anteriores a la v0.5 (sin hash) no se incluyen."""
+        prev = GENESIS
+        checked = 0
+        rows = self.conn.execute("SELECT * FROM audit WHERE hash IS NOT NULL ORDER BY id").fetchall()
+        for r in rows:
+            row = {k: r[k] for k in AUDIT_FIELDS}
+            if r["prev_hash"] != prev or _digest(prev, row) != r["hash"]:
+                return {"ok": False, "primera_fila_alterada": r["id"], "comprobadas": checked}
+            prev = r["hash"]
+            checked += 1
+        return {"ok": True, "comprobadas": checked}

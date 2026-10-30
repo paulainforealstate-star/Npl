@@ -19,7 +19,8 @@ def kpis(cases: list[dict], today: date) -> dict:
     ofertas = [c for c in cases if c["state"].get("offer")]
 
     committed = sum(c["state"]["offer"]["amount"] for c in ofertas)
-    recoveries = [(c, r) for c in cases for r in c["state"].get("recoveries", [])]
+    recoveries = [(c, r) for c in cases for r in c["state"].get("recoveries", [])
+                  if not r.get("anulado")]
     monetized = sum(r["amount"] for _, r in recoveries)
 
     realized_irr = None

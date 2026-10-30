@@ -11,8 +11,19 @@ from npldesk.api import App, make_handler
 from npldesk.db import Database
 
 TODAY = date(2026, 10, 30)
-USERS = {f"tok-{r}": {"user": r, "role": r} for r in auth.ROLES}
-T = {r: f"tok-{r}" for r in auth.ROLES}
+PASSWORD = "clave-de-prueba-larga"
+
+
+def provision(app):
+    """Crea una cuenta por rol y devuelve su token de sesión (iniciada con /api/login)."""
+    tokens = {}
+    for role in auth.ROLES:
+        app.db.create_user(role, f"Usuario {role}", None, role, auth.hash_password(PASSWORD))
+        status, body = app.handle("POST", "/api/login", {"user": role, "password": PASSWORD}, None,
+                                  ip="10.0.0.1")
+        assert status == 200, body
+        tokens[role] = body["token"]
+    return tokens
 
 ROUTES = [
     {"name": "negociación", "scenarios": [
@@ -41,13 +52,14 @@ NOTE = ("Titular: Eduardo Gabarri Céspedes\nFinca: 93296\n"
 class AppTestCase(unittest.TestCase):
     def setUp(self):
         self.db = Database(":memory:")
-        self.app = App(self.db, USERS, today=lambda: TODAY)
+        self.app = App(self.db, today=lambda: TODAY)
+        self.tokens = provision(self.app)
 
     def tearDown(self):
         self.db.close()
 
     def call(self, method, path, body=None, role=None):
-        token = T[role] if role else None
+        token = self.tokens[role] if role else None
         return self.app.handle(method, path, body, token)
 
     def new_case(self, name="Expediente Lobos 3"):
@@ -138,13 +150,16 @@ class WorkflowTests(AppTestCase):
         status, offer = self.call("POST", f"/api/cases/{cid}/offer", {"amount": 80000}, "responsable")
         self.assertEqual(status, 201, offer)
         self.assertIsNotNone(offer["planned_irr"])
-        s, _ = self.call("POST", f"/api/cases/{cid}/recoveries", {"amount": 95000, "date": "2027-06-30"}, "responsable")
+        # Un cobro no puede superar la oferta (2.3); y como no ha pasado tiempo, la TIR realizada no es calculable.
+        s, b = self.call("POST", f"/api/cases/{cid}/recoveries", {"amount": 95000, "date": "2026-10-30"}, "responsable")
+        self.assertEqual(s, 409, b)
+        s, _ = self.call("POST", f"/api/cases/{cid}/recoveries", {"amount": 60000, "date": "2026-10-30"}, "responsable")
         self.assertEqual(s, 201)
         s, k = self.call("GET", "/api/portfolio", None, "inversor")
         self.assertEqual(s, 200)
         self.assertEqual(k["comprometido"], 80000)
-        self.assertEqual(k["monetizado"], 95000)
-        self.assertGreater(k["tir_realizada"], 0)
+        self.assertEqual(k["monetizado"], 60000)
+        self.assertIsNone(k["tir_realizada"])
 
     def test_blocking_risk_gates_offer_until_approved(self):
         cid = self.ready_case()
@@ -252,7 +267,8 @@ class HttpTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.db = Database(":memory:")
-        cls.app = App(cls.db, USERS, today=lambda: TODAY)
+        cls.app = App(cls.db, today=lambda: TODAY)
+        cls.tokens = provision(cls.app)
         cls.server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(cls.app))
         cls.port = cls.server.server_address[1]
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
@@ -267,7 +283,7 @@ class HttpTests(unittest.TestCase):
         data = json.dumps(body).encode() if body is not None else None
         headers = {"Content-Type": "application/json"}
         if role:
-            headers["Authorization"] = f"Bearer {T[role]}"
+            headers["Authorization"] = f"Bearer {self.tokens[role]}"
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", data=data,
                                      method=method, headers=headers)
         try:

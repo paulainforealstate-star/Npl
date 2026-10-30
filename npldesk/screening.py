@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
+from npldesk import validation as V
 from npldesk.config import DEFAULTS
 
 
 def screen(data: dict, cfg: dict | None = None) -> dict:
     c = cfg or DEFAULTS["screening"]
-    loan = float(data["loan"])
-    appraisal = float(data["appraisal"])
-    if appraisal <= 0:
-        raise ValueError("La tasación debe ser mayor que cero")
-    amount = float(data.get("amount", loan))
+    loan = V.amount(data["loan"], "loan")
+    appraisal = V.amount(data["appraisal"], "appraisal", positive=True)
+    amount = V.amount(data.get("amount", loan), "amount")
 
     ltv = loan / appraisal
     reasons: list[str] = []

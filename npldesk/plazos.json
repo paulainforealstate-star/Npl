@@ -1,0 +1,15 @@
+{
+  "_aviso": "Plazos de EJEMPLO para probar el calendario. No son plazos legales: deben sustituirse por los vigentes y validarse por un abogado (campo validado_por).",
+  "plazos": {
+    "judicial_sin_adjudicar": [
+      {"titulo": "Revisar la nota simple (EJEMPLO)", "dias": 7, "norma": null,
+       "fuente": "Ejemplo de prueba", "revisado": "2026-10-30", "validado_por": null},
+      {"titulo": "Comunicación al deudor (EJEMPLO)", "dias": 30, "norma": null,
+       "fuente": "Ejemplo de prueba", "revisado": "2026-10-30", "validado_por": null}
+    ],
+    "judicial_adjudicada": [
+      {"titulo": "Revisar cargas posteriores (EJEMPLO)", "dias": 14, "norma": null,
+       "fuente": "Ejemplo de prueba", "revisado": "2026-10-30", "validado_por": null}
+    ]
+  }
+}

@@ -9,3 +9,5 @@ services:
         value: "1"
       - key: NPLDESK_DB
         value: ":memory:"
+      - key: NPLDESK_REQUIRE_HTTPS
+        value: "1"

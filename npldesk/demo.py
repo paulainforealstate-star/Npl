@@ -1,21 +1,23 @@
-"""Modo demo pública: datos ficticios y tokens conocidos.
+"""Modo demo pública: datos ficticios y contraseñas conocidas.
 
-Solo para probar la app. No cargues nunca datos reales en una instancia demo:
-los tokens son públicos y la base de datos se reinicia al arrancar.
+Solo para probar la app. Arranca únicamente con NPLDESK_DB=:memory:, así que
+ningún dato sobrevive al reinicio y no puede mezclarse con datos reales.
 """
 
 from __future__ import annotations
 
+from npldesk import auth
 from npldesk.api import App
 
-DEMO_TOKENS: dict[str, dict] = {
-    "demo-admin": {"user": "demo_admin", "role": "admin"},
-    "demo-analista": {"user": "demo_analista", "role": "analista"},
-    "demo-responsable": {"user": "demo_responsable", "role": "responsable"},
-    "demo-gestor": {"user": "demo_gestor", "role": "gestor_campo"},
-    "demo-inversor": {"user": "demo_inversor", "role": "inversor"},
-    "demo-auditor": {"user": "demo_auditor", "role": "auditor"},
-}
+# (usuario, rol, contraseña). Son públicas a propósito: las cuentas de demo no tienen datos reales.
+DEMO_USERS: list[tuple[str, str, str]] = [
+    ("demo_admin", "admin", "demo-admin-npl-2026"),
+    ("demo_analista", "analista", "demo-analista-npl-2026"),
+    ("demo_responsable", "responsable", "demo-responsable-npl-2026"),
+    ("demo_gestor", "gestor_campo", "demo-gestor-npl-2026"),
+    ("demo_inversor", "inversor", "demo-inversor-npl-2026"),
+    ("demo_auditor", "auditor", "demo-auditor-npl-2026"),
+]
 
 DEMO_INPUT = {
     "rate": 0.05,
@@ -39,10 +41,29 @@ DEMO_NOTE = ("Titular: Titular Ficticio Demo\nFinca: 00001\n"
              "Saldo pendiente: 118.500,25 €\nFecha de emisión: 27/10/2026")
 
 
+def login(app: App, username: str, password: str) -> str:
+    status, body = app.handle("POST", "/api/login", {"user": username, "password": password},
+                              None, ip="127.0.0.1")
+    if status != 200:
+        raise RuntimeError(f"No se pudo iniciar sesión en la demo como {username}: {body}")
+    return body["token"]
+
+
+def provision(app: App) -> dict[str, str]:
+    """Crea las cuentas de demo (si no existen) y devuelve un token por rol."""
+    tokens = {}
+    for username, role, password in DEMO_USERS:
+        if app.db.get_user_by_name(username) is None:
+            app.db.create_user(username, username.replace("_", " ").capitalize(), None,
+                               role, auth.hash_password(password))
+        tokens[role] = login(app, username, password)
+    return tokens
+
+
 def seed(app: App) -> int:
     """Crea un expediente ficticio con diligencia y decisión, para que se vea el flujo."""
     from datetime import date
-    token = "demo-analista"
+    token = provision(app)["analista"]
     note = DEMO_NOTE.replace("27/10/2026", date.today().strftime("%d/%m/%Y"))
     status, body = app.handle("POST", "/api/cases", {
         "name": "Expediente ficticio demo",

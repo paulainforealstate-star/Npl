@@ -20,7 +20,8 @@ def offer_blockers(state: dict, declared_saldo: float | None,
         blockers.append("El cribado no está aceptado")
     missing = diligence.missing_required(state)
     if missing:
-        blockers.append("Faltan datos de diligencia confirmados: " + ", ".join(missing))
+        names = ", ".join(diligence.FIELD_LABELS.get(f, f) for f in missing)
+        blockers.append("Faltan datos de diligencia confirmados: " + names)
     for al in diligence.alerts(state, declared_saldo, today):
         if al["type"] in ("nota_caducada", "discrepancia"):
             blockers.append(f"Alerta sin resolver ({al['type']}): {al['detail']}")
@@ -55,6 +56,21 @@ def register_decision(state: dict, recommended: str, chosen: str,
     }
 
 
-def change_phase(state: dict, phase: str, today: date) -> None:
+def change_phase(state: dict, phase: str, today: date, motivo: str | None = None,
+                 user: str | None = None, backwards: bool = False) -> None:
+    """Añade la fase al historial. Retroceder exige motivo (lo comprueba la API)."""
     history = state.setdefault("phase_history", [])
-    history.append({"phase": phase, "date": today.isoformat()})
+    history.append({"phase": phase, "date": today.isoformat(), "motivo": motivo,
+                    "by": user, "retroceso": backwards})
+
+
+def check_recovery(state: dict, amount: float, when: str, today_iso: str) -> None:
+    """Reglas de un cobro: no superar la oferta, no ser anterior a ella ni futuro."""
+    offer = state["offer"]
+    active = [r["amount"] for r in state.get("recoveries", []) if not r.get("anulado")]
+    if sum(active) + amount > offer["amount"] + 1e-6:
+        raise GateError("Los cobros superarían el importe ofertado")
+    if when < offer["date"]:
+        raise GateError("La fecha del cobro es anterior a la oferta")
+    if when > today_iso:
+        raise ValueError("La fecha del cobro no puede ser futura")
