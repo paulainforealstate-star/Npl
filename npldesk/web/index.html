@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NPLDesk</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { margin: 0 auto; max-width: 1000px; padding: 1.25rem; }
+  h1 { margin-bottom: .2rem; }
+  h2 { margin: 0 0 .5rem; font-size: 1.1rem; }
+  .muted { opacity: .7; font-size: .85rem; }
+  textarea { width: 100%; min-height: 220px; font-family: ui-monospace, monospace; font-size: .8rem; box-sizing: border-box; }
+  .row { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; margin: .5rem 0; }
+  input, select { padding: .35rem; }
+  button { padding: .4rem .8rem; cursor: pointer; }
+  table { border-collapse: collapse; width: 100%; margin: .4rem 0; font-size: .9rem; }
+  th, td { text-align: left; padding: .3rem .45rem; border-bottom: 1px solid #8884; vertical-align: top; }
+  .best { font-weight: 600; }
+  .err { color: #c33; white-space: pre-wrap; }
+  .ok { color: #2a7; }
+  .card { border: 1px solid #8884; border-radius: 8px; padding: .9rem; margin-top: .9rem; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: .9rem; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<h1>NPLDesk</h1>
+<p class="muted">Gestión de expedientes NPL. Todas las acciones requieren un token de tu rol.</p>
+
+<div class="card">
+  <div class="row">
+    <label>Token <input id="token" type="password" size="36" placeholder="Pega tu token"></label>
+    <button id="saveToken">Usar token</button>
+    <span id="who" class="muted"></span>
+  </div>
+  <div id="globalErr" class="err"></div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>Valoración rápida</h2>
+    <div class="row">
+      <label>Fase
+        <select id="phase">
+          <option value="precontenciosa">Precontenciosa</option>
+          <option value="judicial_sin_adjudicar">Judicial sin adjudicar</option>
+          <option value="judicial_adjudicada">Judicial adjudicada</option>
+        </select>
+      </label>
+      <label>Tasa <input id="rate" type="number" step="0.01" value="0.05" size="5"></label>
+      <label>Margen <input id="margin" type="number" step="0.01" value="0.10" size="5"></label>
+      <label>Monte Carlo <input id="iters" type="number" value="0" size="6"></label>
+    </div>
+    <textarea id="json">{
+  "routes": [
+    {"name": "negociación", "scenarios": [
+      {"name": "base", "probability": 1.0, "sale_price": 90000, "time_years": 0.5,
+       "source": "tasación", "reviewed_at": "2026-10-01"}
+    ]},
+    {"name": "venta ordenada", "scenarios": [
+      {"name": "favorable", "probability": 0.7, "sale_price": 110000, "costs": 8000, "time_years": 1,
+       "source": "mercado", "reviewed_at": "2026-10-01"},
+      {"name": "desfavorable", "probability": 0.3, "sale_price": 70000, "costs": 8000, "time_years": 1.5,
+       "source": "mercado", "reviewed_at": "2026-10-01"}
+    ]}
+  ]
+}</textarea>
+    <div class="row">
+      <button id="calc">Calcular</button>
+      <input id="caseName" placeholder="Nombre del expediente">
+      <button id="save">Crear expediente</button>
+    </div>
+    <div id="calcErr" class="err"></div>
+    <div id="result"></div>
+  </div>
+
+  <div class="card">
+    <h2>Expedientes</h2>
+    <div id="cases" class="muted">Introduce un token para ver los expedientes.</div>
+  </div>
+</div>
+
+<div id="detailCard" class="card" hidden>
+  <h2 id="detailTitle"></h2>
+  <div id="detail"></div>
+  <div class="row">
+    <button data-act="screen">Recalcular cribado</button>
+    <button data-act="report">Ver informe</button>
+    <button id="closeDetail">Cerrar</button>
+  </div>
+  <div id="detailErr" class="err"></div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => (n == null ? "—" : Number(n).toLocaleString("es-ES", { maximumFractionDigits: 0 }) + " €");
+const pct = (n) => (n == null ? "—" : (n * 100).toFixed(2) + " %");
+let token = localStorage.getItem("npldesk_token") || "";
+let currentId = null;
+
+function headers() { return { "Content-Type": "application/json", "Authorization": "Bearer " + token }; }
+
+async function api(method, path, body) {
+  const r = await fetch(path, { method, headers: headers(), body: body ? JSON.stringify(body) : undefined });
+  const ct = r.headers.get("content-type") || "";
+  const data = ct.includes("json") ? await r.json() : await r.text();
+  if (!r.ok) throw new Error((data && data.error) || ("Error " + r.status));
+  return data;
+}
+
+function esc(s) { return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+function renderValuation(res) {
+  let html = "<table><tr><th>Vía</th><th>Valor esperado</th><th>Precio máximo</th></tr>";
+  for (const r of res.ranking) {
+    const cls = r.route === res.best.route ? " class='best'" : "";
+    html += `<tr${cls}><td>${esc(r.route)}</td><td>${fmt(r.expected_value)}</td><td>${fmt(r.max_price)}</td></tr>`;
+  }
+  html += "</table>";
+  if (res.montecarlo) {
+    html += "<table><tr><th>Monte Carlo</th><th>P10</th><th>P50</th><th>P90</th></tr>";
+    for (const [n, p] of Object.entries(res.montecarlo)) {
+      html += `<tr><td>${esc(n)}</td><td>${fmt(p.p10)}</td><td>${fmt(p.p50)}</td><td>${fmt(p.p90)}</td></tr>`;
+    }
+    html += "</table>";
+  }
+  $("result").innerHTML = html;
+}
+
+function buildPayload() {
+  const body = JSON.parse($("json").value);
+  body.phase = $("phase").value;
+  body.rate = parseFloat($("rate").value);
+  body.safety_margin = parseFloat($("margin").value);
+  const iters = parseInt($("iters").value, 10);
+  if (iters > 0) body.montecarlo_iterations = iters;
+  return body;
+}
+
+async function loadCases() {
+  if (!token) return;
+  try {
+    const { cases } = await api("GET", "/api/cases");
+    if (!cases.length) { $("cases").textContent = "Todavía no hay expedientes."; return; }
+    $("cases").innerHTML = "<table><tr><th>Nombre</th><th>Fase</th><th></th></tr>" +
+      cases.map(c => `<tr><td>${esc(c.name)}</td><td>${esc(c.phase)}</td>` +
+        `<td><button data-open="${c.id}">Abrir</button></td></tr>`).join("") + "</table>";
+  } catch (e) { $("cases").innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+}
+
+async function openCase(id) {
+  currentId = id;
+  $("detailErr").textContent = "";
+  try {
+    const c = await api("GET", `/api/cases/${id}`);
+    $("detailTitle").textContent = c.name + " · " + c.phase;
+    const s = c.state, d = s.diligence || {};
+    const conf = d.confirmed || {};
+    const confRows = Object.entries(conf).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v.value)}</td></tr>`).join("");
+    const risks = (s.risks || []).map(r => `<tr><td>${esc(r.category)}</td><td>${esc(r.level)}</td><td>${esc(r.description)}</td><td>${r.approved_by ? "aprobado" : ""}</td></tr>`).join("");
+    const tasks = (c.tasks || []).map(t => `<tr><td>${esc(t.title)}</td><td>${esc(t.status)}</td></tr>`).join("");
+    $("detail").innerHTML =
+      `<p>Cribado: <b>${esc((s.screening || {}).status || "pendiente")}</b> ${esc(((s.screening || {}).reasons || []).join("; "))}</p>` +
+      `<p>Decisión: ${s.decision ? esc(s.decision.chosen) + " (recomendada: " + esc(s.decision.recommended) + ")" : "—"}</p>` +
+      `<p>Oferta: ${s.offer ? fmt(s.offer.amount) + " · TIR prevista " + pct(s.offer.planned_irr) : "—"}</p>` +
+      `<h3>Diligencia confirmada</h3><table>${confRows || "<tr><td>Sin datos confirmados</td></tr>"}</table>` +
+      `<h3>Riesgos</h3><table>${risks || "<tr><td>Sin riesgos</td></tr>"}</table>` +
+      `<h3>Tareas</h3><table>${tasks || "<tr><td>Sin tareas</td></tr>"}</table>` +
+      `<p class="muted">Acciones avanzadas (extracción, confirmación, riesgos, decisión, oferta) se hacen por API: ver README.</p>`;
+    $("detailCard").hidden = false;
+  } catch (e) { $("detailErr").textContent = e.message; }
+}
+
+$("saveToken").onclick = async () => {
+  token = $("token").value.trim();
+  localStorage.setItem("npldesk_token", token);
+  $("globalErr").textContent = "";
+  loadCases();
+};
+
+$("calc").onclick = async () => {
+  $("calcErr").textContent = "";
+  try { renderValuation(await api("POST", "/api/valuation", buildPayload())); }
+  catch (e) { $("calcErr").textContent = e.message; }
+};
+
+$("save").onclick = async () => {
+  $("calcErr").textContent = "";
+  try {
+    const payload = buildPayload();
+    const r = await api("POST", "/api/cases", { name: $("caseName").value, phase: payload.phase, input: payload });
+    if (r.warnings && r.warnings.length) $("calcErr").innerHTML = `<span class="muted">${esc(r.warnings.join(" · "))}</span>`;
+    await loadCases();
+  } catch (e) { $("calcErr").textContent = e.message; }
+};
+
+$("cases").onclick = (ev) => {
+  const b = ev.target.closest("[data-open]");
+  if (b) openCase(b.dataset.open);
+};
+
+$("closeDetail").onclick = () => { $("detailCard").hidden = true; };
+
+$("detailCard").onclick = async (ev) => {
+  const b = ev.target.closest("[data-act]");
+  if (!b || !currentId) return;
+  try {
+    if (b.dataset.act === "screen") {
+      await api("POST", `/api/cases/${currentId}/screen`, {});
+      await openCase(currentId);
+    } else if (b.dataset.act === "report") {
+      const html = await api("GET", `/api/cases/${currentId}/report`);
+      const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+      window.open(url, "_blank");
+    }
+  } catch (e) { $("detailErr").textContent = e.message; }
+};
+
+if (token) { $("token").value = token; $("who").textContent = "Token guardado en este navegador."; loadCases(); }
+</script>
+</body>
+</html>
