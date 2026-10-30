@@ -116,3 +116,22 @@ curl -s -X POST localhost:8000/api/valuation \
 ## Límites legales
 
 La app no da asesoramiento jurídico ni certifica datos registrales. Los riesgos citan la norma de referencia pero no concluyen sobre su validez. Las plantillas de comunicación con el deudor deben revisarse por un abogado antes de usarse.
+
+## Demo pública
+
+Para probarla sin datos reales, hay un modo demo con un expediente ficticio precargado y tokens públicos. Solo debe usarse para probar la app.
+
+Arranque local: `NPLDESK_DEMO=1 NPLDESK_DB=:memory: python3 -m npldesk.api` y abre http://127.0.0.1:8000.
+
+Tokens de la demo (pégalos en la pantalla para entrar con cada rol):
+
+| Rol | Token |
+|---|---|
+| admin | `demo-admin` |
+| analista | `demo-analista` |
+| responsable | `demo-responsable` |
+| gestor de campo | `demo-gestor` |
+| inversor (informe anonimizado) | `demo-inversor` |
+| auditor | `demo-auditor` |
+
+Publicación en Render: en render.yaml ya está configurado. Crea un servicio Blueprint en render.com, conecta este repositorio y despliégalo. La base de datos está en memoria y se reinicia con cada arranque.

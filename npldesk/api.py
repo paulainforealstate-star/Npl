@@ -498,13 +498,28 @@ def make_handler(app: App):
     return Handler
 
 
-def run(host: str = "127.0.0.1", port: int = 8000, db_path: str = "data/npldesk.db",
+def run(host: str | None = None, port: int | None = None, db_path: str | None = None,
         users_path: str = "data/users.json") -> None:
+    """Arranca el servidor. Variables de entorno: HOST, PORT, NPLDESK_DB, NPLDESK_DEMO=1."""
+    import os
+    host = host or os.environ.get("HOST", "127.0.0.1")
+    port = port or int(os.environ.get("PORT", "8000"))
+    db_path = db_path or os.environ.get("NPLDESK_DB", "data/npldesk.db")
+    demo = os.environ.get("NPLDESK_DEMO") == "1"
+
     db = Database(db_path)
-    users = auth.load_users(users_path)
-    app = App(db, users)
+    if demo:
+        from npldesk.demo import DEMO_TOKENS, seed
+        users = dict(DEMO_TOKENS)
+        app = App(db, users)
+        seed(app)
+        mode = "MODO DEMO (datos ficticios, tokens públicos)"
+    else:
+        users = auth.load_users(users_path)
+        app = App(db, users)
+        mode = f"tokens en {users_path}"
     server = ThreadingHTTPServer((host, port), make_handler(app))
-    print(f"NPLDesk en http://{host}:{port} · tokens en {users_path}")
+    print(f"NPLDesk en http://{host}:{port} · {mode}")
     try:
         server.serve_forever()
     finally:

@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: npldesk-demo
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: NPLDESK_DEMO
+        value: "1"
+      - key: NPLDESK_DB
+        value: ":memory:"
