@@ -91,8 +91,15 @@ function showApp() {
   $("who").textContent = `${me.name} · ${me.role}`;
 }
 
+async function loadConfig() {
+  try {
+    const c = await api("GET", "/api/config");
+    $("registerToggle").hidden = !c.registro;
+  } catch (e) { $("registerToggle").hidden = true; }
+}
+
 async function start() {
-  if (!token) return showLogin("");
+  if (!token) { await loadConfig(); return showLogin(""); }
   try {
     me = await api("GET", "/api/me");
     showApp();
@@ -114,6 +121,30 @@ $("loginForm").onsubmit = async (ev) => {
     const r = await api("POST", "/api/login", { user: $("loginUser").value.trim(), password: $("loginPass").value });
     token = r.token; store.set(token);
     $("loginPass").value = "";
+    me = { name: r.name, role: r.role };
+    showApp();
+    await afterLogin();
+  } catch (e) { $("loginErr").textContent = e.message; }
+};
+
+$("registerToggle").onclick = () => {
+  const open = $("registerForm").hidden;
+  $("registerForm").hidden = !open;
+  $("loginForm").hidden = open;
+  $("registerToggle").textContent = open ? "Volver a entrar" : "Crear cuenta nueva";
+  $("loginErr").textContent = "";
+};
+
+$("registerForm").onsubmit = async (ev) => {
+  ev.preventDefault();
+  $("loginErr").textContent = "";
+  const user = $("regUser").value.trim();
+  const password = $("regPass").value;
+  try {
+    await api("POST", "/api/register", { user, name: $("regName").value.trim(), password });
+    const r = await api("POST", "/api/login", { user, password });
+    token = r.token; store.set(token);
+    $("regPass").value = "";
     me = { name: r.name, role: r.role };
     showApp();
     await afterLogin();

@@ -26,7 +26,14 @@
       <label>Contraseña <input id="loginPass" type="password" autocomplete="current-password" required></label>
       <button type="submit">Entrar</button>
     </form>
+    <form id="registerForm" class="row" hidden>
+      <label>Usuario (minúsculas, números o _) <input id="regUser" autocomplete="username" pattern="[a-z0-9_]{3,30}" required></label>
+      <label>Nombre <input id="regName" autocomplete="name" maxlength="100"></label>
+      <label>Contraseña (mínimo 12 caracteres) <input id="regPass" type="password" autocomplete="new-password" minlength="12" required></label>
+      <button type="submit">Crear cuenta</button>
+    </form>
     <p id="loginErr" class="err" role="alert"></p>
+    <button type="button" id="registerToggle" class="linkbtn" hidden>Crear cuenta nueva</button>
   </section>
 
   <div id="appArea" hidden>

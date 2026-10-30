@@ -183,8 +183,12 @@ class App:
         self._lock = threading.RLock()
         self._meta: dict = {"ip": None, "request_id": None}
         self._ip_failures: dict[str, list[datetime]] = {}
+        # Registro abierto: solo en modo demo (lo activa run()).
+        self.open_registration = False
         self.routes = [
             ("POST", r"^/api/login$", self.login),
+            ("POST", r"^/api/register$", self.register),
+            ("GET", r"^/api/config$", self.config),
             ("POST", r"^/api/logout$", self.logout),
             ("GET", r"^/api/me$", self.me),
             ("GET", r"^/api/cases$", self.cases_list),
@@ -338,6 +342,26 @@ class App:
         self._audit_auth("login", row["username"], row["id"], {})
         return 200, {"token": token, "expires_at": _iso(expires), "user": row["username"],
                      "name": row["full_name"], "role": row["role"]}
+
+    def config(self, ctx: dict) -> tuple[int, dict]:
+        return 200, {"registro": self.open_registration}
+
+    def register(self, ctx: dict) -> tuple[int, dict]:
+        """Alta de cuenta con rol analista. Solo disponible en modo demo."""
+        if not self.open_registration:
+            raise NotFound("no encontrado")
+        b = ctx["body"]
+        username = str(b.get("user", "")).strip()
+        if not re.fullmatch(r"[a-z0-9_]{3,30}", username):
+            raise ValueError("El usuario debe tener entre 3 y 30 caracteres: minúsculas, números o guion bajo")
+        full_name = str(b.get("name", "")).strip()[:100] or username
+        password = str(b.get("password", ""))
+        if self.db.get_user_by_name(username) is not None:
+            raise ValueError("Ese usuario ya existe")
+        pw_hash = auth.hash_password(password)  # valida la longitud mínima
+        uid = self.db.create_user(username, full_name, None, "analista", pw_hash)
+        self._audit_auth("registro", username, uid, {"rol": "analista"})
+        return 201, {"ok": True, "user": username}
 
     def logout(self, ctx: dict) -> tuple[int, dict]:
         user = self._session(ctx)
@@ -908,6 +932,7 @@ def run(host: str | None = None, port: int | None = None, db_path: str | None = 
 
     db = Database(db_path)
     app = App(db)
+    app.open_registration = demo
     if demo:
         seed(app)
         mode = "MODO DEMO (datos ficticios, contraseñas públicas)"

@@ -62,6 +62,8 @@ Cada escritura sobre un expediente lleva su `version`. Si otra persona lo ha cam
 | GET | `/`, `/app.js`, `/app.css` | pública (pantalla web) |
 | GET | `/health` | pública; comprueba la base de datos (503 si no responde) |
 | POST | `/api/login` | pública (límites por cuenta y por dirección) |
+| POST | `/api/register` | pública; solo en modo demo, crea cuentas con rol analista |
+| GET | `/api/config` | pública; indica si el registro está activo |
 | POST | `/api/logout` | cualquier sesión |
 | GET | `/api/me` | cualquier sesión |
 | POST | `/api/valuation` | analista |

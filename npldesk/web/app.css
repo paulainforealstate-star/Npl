@@ -160,3 +160,4 @@ tr.best td { font-weight: 600; }
   label { width: 100%; }
   .row > button { width: 100%; }
 }
+.linkbtn { background: none; border: 0; color: inherit; text-decoration: underline; padding: 0; cursor: pointer; }
